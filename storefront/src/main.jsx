@@ -72,7 +72,7 @@ function ThemeToggle({ darkMode, onToggle }) {
       className={`grid h-10 w-10 place-items-center rounded-[5px] border transition ${
         darkMode
           ? 'border-cyan-300/40 bg-white/5 text-white hover:bg-cyan-300 hover:text-slate-950'
-          : 'border-slate-300 bg-white text-slate-950 hover:bg-slate-950 hover:text-white'
+          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-950'
       }`}
     >
       {darkMode ? (
