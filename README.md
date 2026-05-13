@@ -14,9 +14,9 @@ KartClaw is a minimal, modern, AI-first ecommerce starter. It is built as a smal
 
 Production routing is currently handled by Caddy outside this repo:
 
-- `https://tronez.com/` → storefront
-- `https://tronez.com/admin` → admin
-- `https://tronez.com/api/*` → API
+- `https://yourdomain.com/` → storefront
+- `https://yourdomain.com/admin` → admin
+- `https://yourdomain.com/api/*` → API
 
 ## Requirements
 
