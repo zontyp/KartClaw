@@ -134,7 +134,7 @@ function ProductListScreen({ products, loading, error, darkMode, onSelectProduct
     <div>
       <section className="py-10">
         <div className="mb-6">
-          <h2 className="text-[1.575rem] font-semibold leading-tight">Products</h2>
+          <h2 className={`text-[1.575rem] font-semibold leading-tight ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Products</h2>
         </div>
 
         {loading && <div className="rounded-3xl border border-current/10 p-10 text-center font-medium">Loading products…</div>}
