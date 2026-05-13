@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KartClaw Checkout Plan</title>
+  <style>
+    :root { color-scheme: dark; --bg:#020617; --panel:#0f172acc; --text:#e2e8f0; --muted:#94a3b8; --line:#334155; --accent:#22d3ee; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background-image:linear-gradient(rgba(34,211,238,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.05) 1px, transparent 1px); background-size:46px 46px; }
+    main { position:relative; max-width:1100px; margin:0 auto; padding:48px 20px 80px; }
+    article { border:1px solid var(--line); border-radius:5px; background:var(--panel); padding:clamp(20px,4vw,48px); box-shadow:0 24px 80px rgba(0,0,0,.35); }
+    h1 { margin:0 0 12px; color:var(--accent); font-size:clamp(2rem,5vw,4rem); letter-spacing:-.04em; }
+    h2 { margin:44px 0 14px; border-top:1px solid var(--line); padding-top:28px; font-size:1.55rem; }
+    h3 { margin:28px 0 12px; color:#c4b5fd; }
+    p, li { color:var(--muted); line-height:1.7; }
+    pre { overflow:auto; border:1px solid var(--line); border-radius:5px; background:#020617; padding:18px; color:#dbeafe; line-height:1.45; }
+    code { font-family:"SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size:.92rem; }
+    a { color:var(--accent); }
+    .topbar { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:18px; color:var(--muted); }
+    .badge { border:1px solid var(--line); border-radius:5px; padding:8px 12px; background:#020617; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <a href="/">← Back to storefront</a>
+      <span class="badge">/plans</span>
+    </div>
+    <article>
+<h1>KartClaw Checkout Plan</h1>
+<h2>Goal</h2>
+<p>Build a checkout flow for anonymous carts where KartClaw validates stock/prices at checkout click, collects and verifies a WhatsApp phone number with OTP, creates or reuses a user account, lets the user choose a payment method, collects shipping/pickup details, then accepts payment and creates a final order.</p>
+<h2>Core user flow</h2>
+<pre><code>Product list/detail
+      |
+      v
+LocalStorage cart
+      |
+      | click Checkout
+      v
+POST /api/checkout/validate-cart
+      |
+      +-- invalid --&gt; Cart screen shows price/stock fixes
+      |
+      +-- valid ----&gt; Checkout screen
+                         |
+                         v
+                 Enter WhatsApp phone
+                         |
+                         v
+                 Send OTP via Baileys
+                         |
+                         v
+                 Verify OTP
+                         |
+                         v
+                 Create/reuse user account
+                         |
+                         v
+                 Choose payment method
+                         |
+                         v
+                 Shipping address OR pickup
+                         |
+                         v
+                 Pay
+                         |
+                         v
+                 Order created + confirmation</code></pre>
+<h2>Event flow diagrams</h2>
+<h3>1. Validate cart before checkout screen</h3>
+<pre><code>Browser                         KartClaw API                    KartClawDB
+   |                                  |                              |
+   | cart from localStorage           |                              |
+   |---------------------------------&gt;|                              |
+   | POST /api/checkout/validate-cart |                              |
+   | {items:[{uuid, qty, price}]}     |                              |
+   |                                  | SELECT products WHERE uuid IN |
+   |                                  |-----------------------------&gt;|
+   |                                  |&lt;-----------------------------|
+   |                                  | compare live price + stock    |
+   |&lt;---------------------------------|                              |
+   | ok OR corrections/errors         |                              |</code></pre>
+<h3>2. WhatsApp OTP with Baileys</h3>
+<pre><code>Browser                    KartClaw API                Baileys worker/session          WhatsApp
+   |                             |                               |                       |
+   | POST /auth/otp/send         |                               |                       |
+   | {phone}                     |                               |                       |
+   |----------------------------&gt;| create otp_challenge          |                       |
+   |                             |------------------------------&gt;| sendMessage(phone)    |
+   |                             |                               |----------------------&gt;|
+   |&lt;----------------------------| {challengeId, expiresAt}      |                       |
+   |                             |                               |                       |
+   | POST /auth/otp/verify       |                               |                       |
+   | {challengeId, otp}          |                               |                       |
+   |----------------------------&gt;| validate hash/expiry/attempts |                       |
+   |                             | create/reuse user             |                       |
+   |&lt;----------------------------| {sessionToken, user}          |                       |</code></pre>
+<h3>3. Order + payment flow</h3>
+<pre><code>Browser                         API                         Payment Provider             DB
+   |                              |                                |                       |
+   | choose payment method         |                                |                       |
+   | choose shipping/pickup        |                                |                       |
+   |-----------------------------&gt; | create checkout_session         | INSERT session        |
+   |                              | validate cart again             | lock/verify stock     |
+   |&lt;----------------------------- | payment instructions/url        |                       |
+   |                              |                                |                       |
+   | user pays                     |&lt;------------------------------- | webhook/callback      |
+   |                              | verify payment                  |                       |
+   |                              | create order                    | INSERT order/items    |
+   |                              | decrement stock                 | UPDATE products       |
+   |&lt;----------------------------- | order complete screen           |                       |</code></pre>
+<h2>System design</h2>
+<pre><code>+--------------------------+
+| React Storefront         |
+| - localStorage cart      |
+| - cart screen            |
+| - checkout SPA screen    |
++------------+-------------+
+             |
+             | /api/*
+             v
++--------------------------+        +--------------------------+
+| Hono API                 |        | Baileys WhatsApp Client  |
+| - cart validation        |-------&gt;| - logged-in WA session   |
+| - OTP challenges         |        | - send OTP messages      |
+| - users                  |        +--------------------------+
+| - checkout sessions      |
+| - orders                 |        +--------------------------+
+| - payment webhooks       |-------&gt;| Payment provider         |
++------------+-------------+        | Razorpay/Stripe/etc.     |
+             |                      +--------------------------+
+             v
++--------------------------+
+| KartClawDB / PostgreSQL  |
+| products, users, otp,    |
+| checkout_sessions,       |
+| orders, order_items      |
++--------------------------+</code></pre>
+<h2>Database schema diagram</h2>
+<pre><code>products
+--------
+id PK
+uuid UNIQUE
+name
+price
+stock
+status
+image_url
+
+users
+-----
+id PK
+phone_e164 UNIQUE
+created_at
+updated_at
+
+otp_challenges
+--------------
+id PK
+uuid UNIQUE
+phone_e164
+otp_hash
+purpose              -- checkout_login
+attempt_count
+expires_at
+verified_at nullable
+created_at
+
+checkout_sessions
+-----------------
+id PK
+uuid UNIQUE
+user_id FK -&gt; users.id nullable until OTP done
+status               -- validating, otp_pending, address_pending, payment_pending, paid, expired
+cart_snapshot jsonb  -- validated items/prices shown to buyer
+payment_method nullable
+fulfillment_type     -- shipping | pickup
+shipping_address_id FK nullable
+created_at
+updated_at
+expires_at
+
+addresses
+---------
+id PK
+user_id FK -&gt; users.id
+recipient_name
+phone_e164
+line1
+line2
+city
+region
+postal_code
+country
+created_at
+
+orders
+------
+id PK
+uuid UNIQUE
+user_id FK -&gt; users.id
+checkout_session_id FK -&gt; checkout_sessions.id
+status               -- pending_payment, paid, processing, fulfilled, cancelled
+subtotal_cents
+total_cents
+payment_method
+payment_reference
+fulfillment_type
+shipping_address_snapshot jsonb nullable
+created_at
+paid_at nullable
+
+order_items
+-----------
+id PK
+order_id FK -&gt; orders.id
+product_id FK -&gt; products.id
+product_uuid
+name_snapshot
+unit_price_cents
+qty
+row_total_cents</code></pre>
+<h2>API endpoints</h2>
+<pre><code>POST /api/checkout/validate-cart
+POST /api/auth/otp/send
+POST /api/auth/otp/verify
+POST /api/checkout/session
+PATCH /api/checkout/session/:uuid/payment-method
+PATCH /api/checkout/session/:uuid/fulfillment
+POST /api/checkout/session/:uuid/pay
+POST /api/payments/webhook
+GET  /api/orders/:uuid</code></pre>
+<h2>Cart validation response shape</h2>
+<pre><code>// POST /api/checkout/validate-cart
+{
+  items: [
+    { uuid: &#x27;...&#x27;, qty: 2, clientPrice: 129.99 }
+  ]
+}
+
+// 200 OK
+{
+  ok: true,
+  items: [
+    {
+      uuid: &#x27;...&#x27;,
+      name: &#x27;Cyber Deck GPU&#x27;,
+      qty: 2,
+      unitPrice: 129.99,
+      rowTotal: 259.98,
+      stock: 8,
+      image_url: &#x27;/assets/...&#x27;
+    }
+  ],
+  total: 259.98
+}
+
+// 409 Conflict
+{
+  ok: false,
+  errors: [
+    { uuid: &#x27;...&#x27;, code: &#x27;PRICE_CHANGED&#x27;, oldPrice: 129.99, livePrice: 139.99 },
+    { uuid: &#x27;...&#x27;, code: &#x27;INSUFFICIENT_STOCK&#x27;, requested: 3, available: 1 }
+  ],
+  correctedItems: []
+}</code></pre>
+<h2>Hono cart validation sketch</h2>
+<pre><code>app.post(&#x27;/checkout/validate-cart&#x27;, async (c) =&gt; {
+  const { items = [] } = await c.req.json();
+  const uuids = items.map((item) =&gt; item.uuid);
+
+  const { rows: products } = await pool.query(
+    &#x27;SELECT uuid, name, price, stock, status, image_url FROM products WHERE uuid = ANY($1)&#x27;,
+    [uuids]
+  );
+
+  const byUuid = new Map(products.map((product) =&gt; [product.uuid, product]));
+  const errors = [];
+  const correctedItems = [];
+
+  for (const item of items) {
+    const live = byUuid.get(item.uuid);
+    if (!live || live.status !== &#x27;enabled&#x27;) {
+      errors.push({ uuid: item.uuid, code: &#x27;UNAVAILABLE&#x27; });
+      continue;
+    }
+    if (Number(live.price) !== Number(item.price)) {
+      errors.push({ uuid: item.uuid, code: &#x27;PRICE_CHANGED&#x27;, oldPrice: item.price, livePrice: Number(live.price) });
+    }
+    if (live.stock &lt; item.qty) {
+      errors.push({ uuid: item.uuid, code: &#x27;INSUFFICIENT_STOCK&#x27;, requested: item.qty, available: live.stock });
+    }
+    correctedItems.push({ ...live, qty: Math.min(item.qty, live.stock), unitPrice: Number(live.price) });
+  }
+
+  if (errors.length) return c.json({ ok: false, errors, correctedItems }, 409);
+
+  return c.json({
+    ok: true,
+    items: correctedItems,
+    total: correctedItems.reduce((sum, item) =&gt; sum + item.unitPrice * item.qty, 0)
+  });
+});</code></pre>
+<h2>OTP sketch</h2>
+<pre><code>import crypto from &#x27;node:crypto&#x27;;
+
+function makeOtp() {
+  return String(crypto.randomInt(100000, 999999));
+}
+
+function hashOtp(otp) {
+  return crypto.createHash(&#x27;sha256&#x27;).update(`${process.env.OTP_PEPPER}:${otp}`).digest(&#x27;hex&#x27;);
+}
+
+app.post(&#x27;/auth/otp/send&#x27;, async (c) =&gt; {
+  const { phone } = await c.req.json();
+  const otp = makeOtp();
+  const otpHash = hashOtp(otp);
+
+  const { rows } = await pool.query(
+    `INSERT INTO otp_challenges (uuid, phone_e164, otp_hash, purpose, expires_at)
+     VALUES (gen_random_uuid(), $1, $2, &#x27;checkout_login&#x27;, now() + interval &#x27;10 minutes&#x27;)
+     RETURNING uuid, expires_at`,
+    [phone, otpHash]
+  );
+
+  await whatsapp.sendMessage(`${phone.replace(&#x27;+&#x27;, &#x27;&#x27;)}@s.whatsapp.net`, {
+    text: `Your KartClaw checkout code is ${otp}. It expires in 10 minutes.`
+  });
+
+  return c.json({ challengeId: rows[0].uuid, expiresAt: rows[0].expires_at });
+});</code></pre>
+<h2>Files to add/change</h2>
+<pre><code>API/package.json                         add baileys dependency when OTP is implemented
+API/src/index.js                         add checkout/auth/order routes
+API/src/whatsapp.js                      Baileys session + sendOtp helper
+API/db/migrations/003_checkout.sql       users, otp, checkout, orders schema
+storefront/src/main.jsx                  add checkout screen + validation transitions
+storefront/src/styles.css                checkout mobile/desktop polish if needed
+storefront/public/plans/index.html       public HTML version of this plan
+plans/kartclaw-checkout.md               canonical markdown plan
+README.md                                document checkout env vars once implemented</code></pre>
+<h2>Implementation phases</h2>
+<p>1. **Cart validation**</p>
+<p>   - Add `POST /api/checkout/validate-cart`.</p>
+<p>   - Checkout button calls API with localStorage cart.</p>
+<p>   - If valid, show checkout screen.</p>
+<p>   - If invalid, show clear stock/price correction messages.</p>
+<p>2. **Checkout screen shell**</p>
+<p>   - Phone number step.</p>
+<p>   - OTP step.</p>
+<p>   - Payment method step.</p>
+<p>   - Shipping/pickup step.</p>
+<p>   - Payment step.</p>
+<p>3. **WhatsApp OTP**</p>
+<p>   - Add Baileys worker/helper.</p>
+<p>   - Store OTP hash only, never plaintext.</p>
+<p>   - Rate-limit by phone/IP.</p>
+<p>   - Expire OTPs after 10 minutes.</p>
+<p>4. **User account creation**</p>
+<p>   - On OTP verify, `INSERT ... ON CONFLICT(phone_e164) DO UPDATE`.</p>
+<p>   - Store session/JWT for checkout continuation.</p>
+<p>5. **Payment + order creation**</p>
+<p>   - Integrate payment provider.</p>
+<p>   - Validate cart again before payment/order finalization.</p>
+<p>   - Use DB transaction and row locks when decrementing stock.</p>
+<h2>Security notes</h2>
+<ul>
+<li>Validate cart twice: checkout click and payment/order finalization.</li>
+<li>Store OTP hashes only.</li>
+<li>Add resend throttling and max attempt count.</li>
+<li>Normalize phone numbers to E.164 before sending OTP.</li>
+<li>Keep Baileys auth/session files out of git.</li>
+<li>Payment must be confirmed by provider webhook, not only frontend success.</li>
+</ul>
+    </article>
+  </main>
+</body>
+</html>
