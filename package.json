@@ -1,0 +1,13 @@
+{
+  "name": "kartclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:storefront": "npm --prefix storefront run dev",
+    "dev:admin": "npm --prefix admin run dev",
+    "dev:api": "npm --prefix API run dev",
+    "build": "npm --prefix storefront run build && npm --prefix admin run build",
+    "docker:up": "docker compose up -d --build"
+  }
+}

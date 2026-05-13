@@ -1,0 +1,56 @@
+services:
+  kartclaw-db:
+    image: postgres:16-alpine
+    container_name: KartClawDB
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kartclaw
+      POSTGRES_PASSWORD: kartclaw
+      POSTGRES_DB: kartclaw
+    volumes:
+      - kartclaw-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kartclaw -d kartclaw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - openclaw-net
+
+  kartclaw-api:
+    build: ./API
+    container_name: kartclaw-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://kartclaw:kartclaw@KartClawDB:5432/kartclaw
+    depends_on:
+      kartclaw-db:
+        condition: service_healthy
+    networks:
+      - openclaw-net
+
+  kartclaw-storefront:
+    build: ./storefront
+    container_name: kartclaw-storefront
+    restart: unless-stopped
+    depends_on:
+      - kartclaw-api
+    networks:
+      - openclaw-net
+
+  kartclaw-admin:
+    build: ./admin
+    container_name: kartclaw-admin
+    restart: unless-stopped
+    depends_on:
+      - kartclaw-api
+    networks:
+      - openclaw-net
+
+networks:
+  openclaw-net:
+    external: true
+
+volumes:
+  kartclaw-db-data:
+    name: kartclaw-db-data
