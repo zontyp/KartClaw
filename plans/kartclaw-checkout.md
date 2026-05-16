@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a checkout flow for anonymous carts where KartClaw validates stock/prices at checkout click, collects and verifies a WhatsApp phone number with OTP, creates or reuses a user account, lets the user choose a payment method, collects shipping/pickup details, then accepts payment and creates a final order.
+Build a checkout flow for anonymous carts where KartClaw validates stock/prices at checkout click, keeps the buyer on the cart screen if fixes are needed, moves clean carts into checkout, shows available payment methods first, collects and verifies a WhatsApp phone number with OTP, creates or reuses a user account, collects shipping/pickup details, accepts payment, creates a final order, and sends a WhatsApp order confirmation through Baileys.
 
 ## Core user flow
 
@@ -16,10 +16,16 @@ LocalStorage cart
       v
 POST /api/checkout/validate-cart
       |
-      +-- invalid --> Cart screen shows price/stock fixes
+      +-- invalid --> stay on Cart screen
+      |                show price/stock/cart errors inline
       |
       +-- valid ----> Checkout screen
                          |
+                         v
+                 Show available payment methods
+                 (GPay / card / COD / enabled options)
+                         |
+                         | user clicks Continue
                          v
                  Enter WhatsApp phone
                          |
@@ -29,20 +35,24 @@ POST /api/checkout/validate-cart
                          v
                  Verify OTP
                          |
-                         v
-                 Create/reuse user account
-                         |
-                         v
-                 Choose payment method
-                         |
-                         v
-                 Shipping address OR pickup
-                         |
-                         v
-                 Pay
-                         |
-                         v
-                 Order created + confirmation
+               +---------+----------+
+               | invalid/error      | valid
+               v                    v
+        Show checkout error   Login existing user
+                              OR sign up new user
+                                      |
+                                      v
+                              Shipping address OR pickup
+                                      |
+                                      v
+                              Pay using selected method
+                                      |
+                            +-+------------------+
+                            | error              | success
+                            v                    v
+                    Show checkout error   Order placed screen
+                                          Show order id
+                                          WhatsApp confirmation
 ```
 
 ## Event flow diagrams
@@ -62,13 +72,25 @@ Browser                         KartClaw API                    KartClawDB
    |                                  | compare live price + stock    |
    |<---------------------------------|                              |
    | ok OR corrections/errors         |                              |
+   |                                  |                              |
+   | if errors: stay on cart screen   |                              |
+   | and show inline cart errors      |                              |
+   |                                  |                              |
+   | if ok: navigate to checkout      |                              |
 ```
 
-### 2. WhatsApp OTP with Baileys
+### 2. Payment-method preview, then WhatsApp OTP with Baileys
 
 ```text
 Browser                    KartClaw API                Baileys worker/session          WhatsApp
    |                             |                               |                       |
+   | checkout screen loads       |                               |                       |
+   |---------------------------->| GET /checkout/payment-methods |                       |
+   |<----------------------------| GPay/card/COD/enabled options |                       |
+   | show methods + Continue     |                               |                       |
+   |                             |                               |                       |
+   | user clicks Continue        |                               |                       |
+   | enter phone                 |                               |                       |
    | POST /auth/otp/send         |                               |                       |
    | {phone}                     |                               |                       |
    |---------------------------->| create otp_challenge          |                       |
@@ -80,25 +102,30 @@ Browser                    KartClaw API                Baileys worker/session   
    | {challengeId, otp}          |                               |                       |
    |---------------------------->| validate hash/expiry/attempts |                       |
    |                             | create/reuse user             |                       |
-   |<----------------------------| {sessionToken, user}          |                       |
+   |<----------------------------| {sessionToken, user} OR error |                       |
+   | show checkout error on fail |                               |                       |
 ```
 
 ### 3. Order + payment flow
 
 ```text
-Browser                         API                         Payment Provider             DB
+Browser                         API                         Payment Provider             DB / WhatsApp
    |                              |                                |                       |
-   | choose payment method         |                                |                       |
+   | selected payment method       |                                |                       |
    | choose shipping/pickup        |                                |                       |
    |-----------------------------> | create checkout_session         | INSERT session        |
    |                              | validate cart again             | lock/verify stock     |
    |<----------------------------- | payment instructions/url        |                       |
    |                              |                                |                       |
-   | user pays                     |<------------------------------- | webhook/callback      |
-   |                              | verify payment                  |                       |
+   | user pays / confirms COD      |<------------------------------- | webhook/callback      |
+   |                              | verify payment or COD choice    |                       |
    |                              | create order                    | INSERT order/items    |
    |                              | decrement stock                 | UPDATE products       |
-   |<----------------------------- | order complete screen           |                       |
+   |                              | send order placed WhatsApp      | Baileys sendMessage   |
+   |<----------------------------- | order placed + order id         |                       |
+   |                              |                                |                       |
+   | payment/order error           |                                | no order finalization |
+   |<----------------------------- | checkout-screen error message   |                       |
 ```
 
 ## System design
@@ -117,7 +144,8 @@ Browser                         API                         Payment Provider    
 | Hono API                 |        | Baileys WhatsApp Client  |
 | - cart validation        |------->| - logged-in WA session   |
 | - OTP challenges         |        | - send OTP messages      |
-| - users                  |        +--------------------------+
+| - users                  |        | - send order confirmations|
+| - payment methods        |        +--------------------------+
 | - checkout sessions      |
 | - orders                 |        +--------------------------+
 | - payment webhooks       |------->| Payment provider         |
@@ -171,7 +199,7 @@ uuid UNIQUE
 user_id FK -> users.id nullable until OTP done
 status               -- validating, otp_pending, address_pending, payment_pending, paid, expired
 cart_snapshot jsonb  -- validated items/prices shown to buyer
-payment_method nullable
+payment_method nullable -- selected after buyer sees available methods first
 fulfillment_type     -- shipping | pickup
 shipping_address_id FK nullable
 created_at
@@ -223,7 +251,11 @@ row_total_cents
 ## API endpoints
 
 ```text
+GET  /api/whatsapp/status          -- returns connected + qrDataUrl for Baileys login
+POST /api/whatsapp/restart         -- operator helper to restart Baileys socket
 POST /api/checkout/validate-cart
+GET  /api/checkout/payment-methods
+GET  /api/auth/me                  -- sessionToken lookup + latest saved address
 POST /api/auth/otp/send
 POST /api/auth/otp/verify
 POST /api/checkout/session
@@ -232,6 +264,7 @@ PATCH /api/checkout/session/:uuid/fulfillment
 POST /api/checkout/session/:uuid/pay
 POST /api/payments/webhook
 GET  /api/orders/:uuid
+GET  /api/orders/mine              -- logged-in account screen past orders
 ```
 
 ## Cart validation response shape
@@ -313,6 +346,19 @@ app.post('/checkout/validate-cart', async (c) => {
 });
 ```
 
+## Checkout transition rules
+
+- Checkout click always calls `POST /api/checkout/validate-cart` before navigation.
+- If validation returns any error, the storefront stays on the cart screen and shows readable inline errors next to the affected cart items or in a cart-level error banner.
+- If validation succeeds, the storefront navigates to the checkout screen and keeps the validated cart snapshot for the rest of checkout.
+- The first checkout step shows available payment methods before asking for phone/OTP. This lets COD-only buyers see immediately that COD is available and lets online-payment buyers know GPay/card options exist before they spend time entering OTP.
+- The buyer chooses a payment method and clicks Continue.
+- If the browser has a valid saved `sessionToken`, checkout identifies the user with `GET /api/auth/me`, skips phone/OTP, and pre-fills the latest shipping address.
+- Once logged in, the storefront shows an account/person icon beside the cart button. Clicking it opens the account screen with past orders listed one below another: order id, date, status, items, and total amount.
+- If no valid session exists, checkout asks for phone + OTP and then saves the returned `sessionToken` in `localStorage` for future checkouts.
+- OTP, address, and payment errors are shown on the checkout screen without sending the buyer back to cart unless the cart itself becomes invalid during final validation.
+- A successful payment or confirmed COD order shows an order placed screen with the order id and triggers a WhatsApp confirmation message through Baileys.
+
 ## OTP sketch
 
 ```js
@@ -350,10 +396,9 @@ app.post('/auth/otp/send', async (c) => {
 
 ```text
 API/package.json                         add baileys dependency when OTP is implemented
-API/src/index.js                         add checkout/auth/order routes
-API/src/whatsapp.js                      Baileys session + sendOtp helper
+API/src/index.js                         add checkout/auth/order routes + Baileys QR/status/send helpers
 API/db/migrations/003_checkout.sql       users, otp, checkout, orders schema
-storefront/src/main.jsx                  add checkout screen + validation transitions
+storefront/src/main.jsx                  add cart validation, payment-method preview, checkout screen, account orders screen + error transitions
 storefront/src/styles.css                checkout mobile/desktop polish if needed
 storefront/public/plans/index.html       public HTML version of this plan
 plans/kartclaw-checkout.md               canonical markdown plan
@@ -369,14 +414,17 @@ README.md                                document checkout env vars once impleme
    - If invalid, show clear stock/price correction messages.
 
 2. **Checkout screen shell**
+   - First step shows available payment methods: GPay, card, COD, and any enabled provider options.
+   - Buyer selects one payment method and clicks Continue before phone/OTP.
    - Phone number step.
    - OTP step.
-   - Payment method step.
    - Shipping/pickup step.
-   - Payment step.
+   - Payment step using the selected method.
+   - Checkout-screen error banner/inline state for OTP, address, payment, and order errors.
 
 3. **WhatsApp OTP**
    - Add Baileys worker/helper.
+   - Expose QR login through `GET /api/whatsapp/status` so the operator can scan and connect the WhatsApp session.
    - Store OTP hash only, never plaintext.
    - Rate-limit by phone/IP.
    - Expire OTPs after 10 minutes.
@@ -386,9 +434,12 @@ README.md                                document checkout env vars once impleme
    - Store session/JWT for checkout continuation.
 
 5. **Payment + order creation**
-   - Integrate payment provider.
+   - Integrate payment provider and COD finalization path.
    - Validate cart again before payment/order finalization.
    - Use DB transaction and row locks when decrementing stock.
+   - On success, show order placed screen with order id.
+   - Send WhatsApp order placed confirmation through Baileys.
+   - On failure, keep buyer on checkout screen and show the payment/order error.
 
 ## Security notes
 
@@ -398,3 +449,5 @@ README.md                                document checkout env vars once impleme
 - Normalize phone numbers to E.164 before sending OTP.
 - Keep Baileys auth/session files out of git.
 - Payment must be confirmed by provider webhook, not only frontend success.
+- COD must still create an auditable order event and should not pretend to be paid online.
+- WhatsApp order confirmation should be sent only after the order row exists.

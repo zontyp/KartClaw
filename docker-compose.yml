@@ -23,6 +23,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://kartclaw:kartclaw@KartClawDB:5432/kartclaw
+      BAILEYS_AUTH_DIR: /data/baileys-auth
+      OTP_PEPPER: change-me-kartclaw-otp-pepper
+    volumes:
+      - kartclaw-api-data:/data
     depends_on:
       kartclaw-db:
         condition: service_healthy
@@ -54,3 +58,5 @@ networks:
 volumes:
   kartclaw-db-data:
     name: kartclaw-db-data
+  kartclaw-api-data:
+    name: kartclaw-api-data
